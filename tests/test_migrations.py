@@ -22,7 +22,9 @@ async def test_initial_migration_creates_delivery_constraints(tmp_path):
     engine = create_async_engine(url)
     async with engine.connect() as connection:
         constraints = await connection.run_sync(lambda c: inspect(c).get_unique_constraints("deliveries"))
+        indexes = await connection.run_sync(lambda c: inspect(c).get_indexes("outbox"))
     assert any(set(item["column_names"]) == {"request_id", "user_id"} for item in constraints)
+    assert any(item["name"] == "ix_outbox_pending_route_time" for item in indexes)
     await engine.dispose()
 
 
@@ -44,7 +46,6 @@ async def test_upgrade_preserves_old_request_hash_and_bulk_lane(tmp_path, event)
             metadata = MetaData()
             templates = Table('templates', metadata, autoload_with=sync)
             requests = Table('requests', metadata, autoload_with=sync)
-            # SQLite reflection represents UUID as CHAR(32).
             sync.execute(templates.insert().values(id=template_id.hex, template_id='welcome', version=1,
                                                    subject='Hi', html_body='Hi', text_body='Hi', created_at=now()))
             sync.execute(requests.insert().values(id=request_id.hex, service_id='auth', endpoint_kind='events',

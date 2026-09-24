@@ -17,6 +17,13 @@ class MoviePayload(StrictModel):
     title: str = Field(min_length=1, max_length=300)
     url: HttpUrl
 
+    @field_validator("title")
+    @classmethod
+    def single_line(cls, value):
+        if "\r" in value or "\n" in value:
+            raise ValueError("title must be one line")
+        return value
+
 
 class RegistrationEvent(StrictModel):
     channel: Literal["email"] = "email"

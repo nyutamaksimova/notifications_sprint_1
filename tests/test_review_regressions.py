@@ -12,6 +12,7 @@ from notification_service.outbox import OutboxPublisher
 from notification_service.processing import Processor
 from notification_service.requests import RequestService
 from notification_service.workers.runtime import consume_message
+from notification_service.workers.runtime import wait_for_in_flight
 
 from test_workers import Auth, SMTP
 
@@ -66,6 +67,28 @@ async def test_diagnostic_failure_does_not_ack_original(sessions):
     await consume_message(message, 'send', Processor(sessions, Auth(), SMTP()), Broker(), stop)
     assert not message.acked
     assert message.requeued
+
+
+async def test_shutdown_drains_in_flight_callbacks_before_cancelling():
+    finished = asyncio.Event()
+
+    async def send():
+        await asyncio.sleep(0.01)
+        finished.set()
+
+    task = asyncio.create_task(send())
+    await wait_for_in_flight({task}, timeout=1)
+    assert finished.is_set()
+    assert not task.cancelled()
+
+
+async def test_shutdown_cancels_callback_after_grace_period():
+    async def send_forever():
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(send_forever())
+    await wait_for_in_flight({task}, timeout=0.01)
+    assert task.cancelled()
 
 
 async def test_failed_publish_logs_sanitized_diagnostic(sessions, event, caplog):

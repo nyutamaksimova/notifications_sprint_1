@@ -1,4 +1,3 @@
-# Dedicated test stack. Credentials below are intentionally public test fixtures.
 x-notification-env: &notification-env
   DATABASE_URL: postgresql+asyncpg://notification:test@notification-postgres:5432/notification_test
   RABBITMQ_URL: amqp://test:test@rabbitmq:5672/
@@ -35,6 +34,7 @@ x-auth-env: &auth-env
 
 x-worker: &worker
   build: .
+  stop_grace_period: 45s
   environment: *notification-env
   depends_on:
     seed:
@@ -52,7 +52,7 @@ services:
       POSTGRES_PASSWORD: test
       POSTGRES_DB: notification_test
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U notification -d notification_test"]
+      test: [ "CMD-SHELL", "pg_isready -U notification -d notification_test" ]
       interval: 2s
       retries: 30
   postgres:
@@ -62,7 +62,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: auth_db
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d auth_db"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d auth_db" ]
       interval: 2s
       retries: 30
   redis:
@@ -73,7 +73,7 @@ services:
       RABBITMQ_DEFAULT_USER: test
       RABBITMQ_DEFAULT_PASS: test
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
       interval: 3s
       retries: 30
   mailpit:
@@ -87,13 +87,13 @@ services:
       redis:
         condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/openapi.json')"]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/openapi.json')" ]
       interval: 3s
       retries: 40
   auth-publisher:
     build: ../sprint8/auth-service
     environment: *auth-env
-    command: ["python", "-m", "src.workers.notification_publisher"]
+    command: [ "python", "-m", "src.workers.notification_publisher" ]
     depends_on:
       auth-service:
         condition: service_healthy
@@ -102,14 +102,14 @@ services:
   migrate:
     build: .
     environment: *notification-env
-    command: ["alembic", "upgrade", "head"]
+    command: [ "alembic", "upgrade", "head" ]
     depends_on:
       notification-postgres:
         condition: service_healthy
   seed:
     build: .
     environment: *notification-env
-    command: ["python", "-m", "notification_service.seed"]
+    command: [ "python", "-m", "notification_service.seed" ]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -119,41 +119,41 @@ services:
       seed:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')" ]
       interval: 3s
       retries: 30
   publisher:
     <<: *worker
-    command: ["python", "-m", "notification_service.workers.publisher"]
+    command: [ "python", "-m", "notification_service.workers.publisher" ]
   prepare:
     <<: *worker
-    command: ["python", "-m", "notification_service.workers.prepare"]
+    command: [ "python", "-m", "notification_service.workers.prepare" ]
   send:
     <<: *worker
-    command: ["python", "-m", "notification_service.workers.send"]
+    command: [ "python", "-m", "notification_service.workers.send" ]
   urgent-publisher:
     <<: *worker
     environment:
       <<: *notification-env
       WORKER_LANE: urgent
-    command: ["python", "-m", "notification_service.workers.publisher"]
+    command: [ "python", "-m", "notification_service.workers.publisher" ]
   urgent-prepare:
     <<: *worker
     environment:
       <<: *notification-env
       WORKER_LANE: urgent
-    command: ["python", "-m", "notification_service.workers.prepare"]
+    command: [ "python", "-m", "notification_service.workers.prepare" ]
   urgent-send:
     <<: *worker
     environment:
       <<: *notification-env
       WORKER_LANE: urgent
-    command: ["python", "-m", "notification_service.workers.send"]
+    command: [ "python", "-m", "notification_service.workers.send" ]
   tests:
     build:
       context: .
       dockerfile: Dockerfile.test
-    profiles: ["tests"]
+    profiles: [ "tests" ]
     environment:
       TEST_POSTGRES_URL: postgresql+asyncpg://notification:test@notification-postgres:5432/notification_test
       TEST_RABBITMQ_URL: amqp://test:test@rabbitmq:5672/
@@ -167,9 +167,9 @@ services:
         condition: service_healthy
   auth-tests:
     build: ../sprint8/auth-service
-    profiles: ["tests"]
+    profiles: [ "tests" ]
     environment: *auth-env
-    command: ["python", "-m", "pytest", "src/tests/functional", "-v"]
+    command: [ "python", "-m", "pytest", "src/tests/functional", "-v" ]
     depends_on:
       auth-service:
         condition: service_healthy

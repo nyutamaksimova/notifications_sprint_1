@@ -1,12 +1,12 @@
 from uuid import uuid4
 
 import pytest
-from notification_service.api.schemas import CampaignInput
+from pydantic import ValidationError
 from notification_service.api.schemas import parse_event
+from notification_service.api.schemas import CampaignInput
 from notification_service.clients.auth import Recipient
 from notification_service.rendering import render_email
 from notification_service.templates import initial_templates
-from pydantic import ValidationError
 
 
 def test_event_rejects_unknown_payload_and_naive_date():
@@ -17,6 +17,17 @@ def test_event_rejects_unknown_payload_and_naive_date():
         parse_event({**event, "occurred_at": "2026-09-22T10:00:00"})
     with pytest.raises(ValidationError):
         parse_event({**event, "payload": {**event["payload"], "email": "a@example.org"}})
+
+
+def test_movie_title_rejects_header_newlines():
+    movie = {
+        "event_id": str(uuid4()), "event_type": "movie.published",
+        "occurred_at": "2026-09-22T10:00:00Z",
+        "payload": {"movie_id": str(uuid4()), "title": "Premiere\nBcc: attacker@example.org",
+                    "url": "https://cinema.example.org/movie"},
+    }
+    with pytest.raises(ValidationError):
+        parse_event(movie)
 
 
 def test_campaign_deduplicates_and_rejects_recipient_override():

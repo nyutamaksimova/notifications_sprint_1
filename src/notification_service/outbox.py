@@ -1,18 +1,18 @@
 from uuid import uuid4
 from datetime import timedelta
-from sqlalchemy import select, update, or_
+from sqlalchemy import select, update, delete, or_
 from time import monotonic
 from notification_service.logging import event
 from notification_service.api.schemas import BrokerEnvelope
 from notification_service.db.models import Outbox, now
 
 
-def enqueue(session, kind, entity_id, generation, available_at=None, error_code=None, lane="bulk"):
+def enqueue(session, kind, entity_id, generation, available_at=None, error_code=None, lane="bulk", dedup_key=None):
     envelope = BrokerEnvelope(message_id=uuid4(), kind=kind, entity_id=entity_id,
                               generation=generation, error_code=error_code, lane=lane)
     routing_key = f"urgent.{kind}" if lane == "urgent" and kind != "failed" else kind
     session.add(Outbox(routing_key=routing_key, payload=envelope.model_dump(mode="json", exclude={"lane"}),
-                       dedup_key=f"{kind}:{entity_id}:{generation}",
+                       dedup_key=dedup_key or f"{kind}:{entity_id}:{generation}",
                        available_at=available_at or now()))
 
 
@@ -52,3 +52,16 @@ class OutboxPublisher:
               error_code=None if result else 'broker_publish_failed',
               duration_ms=round((monotonic() - started) * 1000))
         return result
+
+    async def cleanup(self, retention_seconds, batch_size=1000):
+        cutoff = now() - timedelta(seconds=retention_seconds)
+        async with self.sessions() as session:
+            ids = (await session.scalars(select(Outbox.id).where(
+                Outbox.published_at.is_not(None), Outbox.published_at < cutoff,
+                Outbox.lease_token.is_(None)).order_by(Outbox.published_at).limit(batch_size))).all()
+            if not ids:
+                return 0
+            result = await session.execute(delete(Outbox).where(Outbox.id.in_(ids)))
+            await session.commit()
+            event('outbox_cleanup', deleted=result.rowcount, retention_seconds=retention_seconds)
+            return result.rowcount

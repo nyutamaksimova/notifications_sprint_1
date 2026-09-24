@@ -74,4 +74,4 @@ class RequestService:
             return {"id": str(row.id), "preparation_status": row.status,
                     "last_error_code": row.last_error_code,
                     "deliveries": {key: counts.get(key, 0) for key in
-                                  ("pending", "processing", "retry_wait", "sent", "failed", "skipped")}}
+                                  ("pending", "processing", "retry_wait", "sent", "failed", "expired", "skipped")}}

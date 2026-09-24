@@ -2,6 +2,7 @@ x-app: &app
   build: .
   env_file: ${NOTIFICATION_ENV_FILE:-.env}
   restart: unless-stopped
+  stop_grace_period: 45s
   depends_on:
     seed:
       condition: service_completed_successfully
@@ -18,7 +19,7 @@ services:
     volumes:
       - notification_db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U notification -d notification"]
+      test: [ "CMD-SHELL", "pg_isready -U notification -d notification" ]
       interval: 3s
       retries: 20
   rabbitmq:
@@ -31,7 +32,7 @@ services:
     ports:
       - "127.0.0.1:15673:15672"
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
       interval: 5s
       retries: 20
   mailpit:
@@ -41,14 +42,14 @@ services:
   migrate:
     build: .
     env_file: ${NOTIFICATION_ENV_FILE:-.env}
-    command: ["alembic", "upgrade", "head"]
+    command: [ "alembic", "upgrade", "head" ]
     depends_on:
       postgres:
         condition: service_healthy
   seed:
     build: .
     env_file: ${NOTIFICATION_ENV_FILE:-.env}
-    command: ["python", "-m", "notification_service.seed"]
+    command: [ "python", "-m", "notification_service.seed" ]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -61,28 +62,28 @@ services:
       - "127.0.0.1:8003:8000"
   publisher:
     <<: *app
-    command: ["python", "-m", "notification_service.workers.publisher"]
+    command: [ "python", "-m", "notification_service.workers.publisher" ]
   prepare:
     <<: *app
-    command: ["python", "-m", "notification_service.workers.prepare"]
+    command: [ "python", "-m", "notification_service.workers.prepare" ]
   send:
     <<: *app
-    command: ["python", "-m", "notification_service.workers.send"]
+    command: [ "python", "-m", "notification_service.workers.send" ]
   urgent-publisher:
     <<: *app
     environment:
       WORKER_LANE: urgent
-    command: ["python", "-m", "notification_service.workers.publisher"]
+    command: [ "python", "-m", "notification_service.workers.publisher" ]
   urgent-prepare:
     <<: *app
     environment:
       WORKER_LANE: urgent
-    command: ["python", "-m", "notification_service.workers.prepare"]
+    command: [ "python", "-m", "notification_service.workers.prepare" ]
   urgent-send:
     <<: *app
     environment:
       WORKER_LANE: urgent
-    command: ["python", "-m", "notification_service.workers.send"]
+    command: [ "python", "-m", "notification_service.workers.send" ]
 
 volumes:
   notification_db:

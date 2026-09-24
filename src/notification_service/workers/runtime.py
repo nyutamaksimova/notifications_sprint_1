@@ -59,7 +59,8 @@ async def run(kind):
     try:
         async with httpx.AsyncClient() as http:
             processor = Processor(sessions, AuthClient(settings.auth_url, settings.auth_reader_token.get_secret_value(), http),
-                                  SMTPClient(settings))
+                                  SMTPClient(settings), {"urgent": settings.urgent_delivery_ttl_seconds,
+                                                         "bulk": settings.bulk_delivery_ttl_seconds})
             while not stop.is_set():
                 broker = Broker(settings.rabbitmq_url.get_secret_value(), settings.concurrency)
                 try:
@@ -67,6 +68,7 @@ async def run(kind):
                     if kind == "publisher":
                         publisher, recovery = OutboxPublisher(sessions, broker, lane=settings.worker_lane), Recovery(sessions)
                         next_report = 0
+                        next_cleanup = 0
                         while not stop.is_set():
                             await recovery.tick()
                             if settings.worker_lane == 'urgent' and monotonic() >= next_report:
@@ -75,18 +77,28 @@ async def run(kind):
                                 if urgent['overdue_requests'] or urgent['overdue_deliveries']:
                                     event('urgent_slo_exceeded', **urgent)
                                 next_report = monotonic() + 60
+                            if settings.worker_lane == 'bulk' and monotonic() >= next_cleanup:
+                                await publisher.cleanup(settings.outbox_retention_seconds)
+                                next_cleanup = monotonic() + 60
                             published = await publisher.tick()
                             if not published:
                                 await pause(stop, 1)
                     else:
                         semaphore = asyncio.Semaphore(settings.concurrency)
+                        in_flight = set()
                         async def consume(message):
-                            async with semaphore:
-                                await consume_message(message, kind, processor, broker, stop)
+                            task = asyncio.current_task()
+                            in_flight.add(task)
+                            try:
+                                async with semaphore:
+                                    await consume_message(message, kind, processor, broker, stop)
+                            finally:
+                                in_flight.discard(task)
                         route = f"urgent.{kind}" if settings.worker_lane == "urgent" else kind
                         tag = await broker.queues[route].consume(consume)
                         await stop.wait()
                         await broker.queues[route].cancel(tag)
+                        await wait_for_in_flight(in_flight, settings.shutdown_timeout_seconds)
                 except Exception:
                     event("worker_connection_error", kind=kind)
                     await pause(stop, 5)
@@ -101,3 +113,15 @@ async def pause(stop, seconds):
         await asyncio.wait_for(stop.wait(), seconds)
     except TimeoutError:
         pass
+
+
+async def wait_for_in_flight(tasks, timeout):
+    pending = [task for task in tasks if not task.done()]
+    if not pending:
+        return
+    done, still_running = await asyncio.wait(pending, timeout=timeout)
+    if still_running:
+        event("worker_shutdown_timeout", count=len(still_running), timeout_seconds=timeout)
+        for task in still_running:
+            task.cancel()
+        await asyncio.gather(*still_running, return_exceptions=True)

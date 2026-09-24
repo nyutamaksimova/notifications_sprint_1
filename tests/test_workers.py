@@ -12,6 +12,7 @@ from notification_service.processing import Processor
 from notification_service.processing import Recovery
 from notification_service.requests import RequestService
 from notification_service.retry import PermanentError
+from notification_service.retry import TemporaryError
 from sqlalchemy import select
 
 
@@ -106,6 +107,48 @@ async def test_five_attempts_then_dead_letter(sessions, event):
     async with sessions() as session:
         assert (await session.get(Delivery, message.entity_id)).status == "failed"
     assert (await envelope(sessions, "failed")).error_code == "processing_error"
+
+
+async def test_early_retry_message_is_rescheduled_before_ack(sessions, event):
+    smtp = SMTP()
+    smtp.error = TemporaryError("smtp_network")
+    worker, message = await setup_delivery(sessions, event, Auth(), smtp)
+    await worker.handle(message)
+    async with sessions() as session:
+        row = await session.get(Delivery, message.entity_id)
+        assert row.status == "retry_wait"
+        generation = row.generation
+        before = len(
+            (await session.scalars(select(Outbox).where(Outbox.payload["entity_id"].as_string() == str(row.id)))).all())
+    retry_message = await envelope(sessions, "send")
+    await worker.handle(retry_message)
+    async with sessions() as session:
+        rows = (await session.scalars(select(Outbox).where(Outbox.routing_key == "urgent.send",
+                                                           Outbox.payload["entity_id"].as_string() == str(
+                                                               message.entity_id)))).all()
+        assert len(rows) >= 2
+        assert any(":deferred:" in row.dedup_key for row in rows)
+        assert (await session.get(Delivery, message.entity_id)).generation == generation
+
+
+async def test_temporary_failure_expires_old_delivery_without_more_retries(sessions, event):
+    smtp = SMTP()
+    worker, message = await setup_delivery(sessions, event, Auth(), smtp)
+    async with sessions() as session:
+        delivery = await session.get(Delivery, message.entity_id)
+        request = await session.get(Request, delivery.request_id)
+        request.accepted_at = now() - timedelta(seconds=10)
+        await session.commit()
+    worker.delivery_ttl_seconds = {"urgent": 1, "bulk": 1}
+    smtp.error = TemporaryError("smtp_unavailable")
+    await worker.handle(message)
+    async with sessions() as session:
+        delivery = await session.get(Delivery, message.entity_id)
+        assert delivery.status == "expired"
+        assert delivery.last_error_code == "delivery_expired"
+        assert not (await session.scalars(select(Outbox).where(
+            Outbox.routing_key == "urgent.send", Outbox.payload["entity_id"].as_string() == str(message.entity_id),
+            Outbox.payload["error_code"].as_string() == "smtp_unavailable"))).all()
 
 
 async def test_crashed_lease_is_recovered_and_old_message_ignored(sessions, event):

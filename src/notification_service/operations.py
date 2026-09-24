@@ -21,6 +21,7 @@ class Operations:
         model = Request if kind == 'prepare' else Delivery
         key = (kind, entity_id, retry_id)
         async with self.sessions() as session:
+            # Lock the target before checking the journal: concurrent replays serialize.
             row = await session.scalar(select(model).where(model.id == entity_id).with_for_update())
             if row is None:
                 raise HTTPException(404, 'Task not found')
@@ -45,9 +46,9 @@ class Operations:
         result = {}
         async with self.sessions() as session:
             for name, model in (('requests', Request), ('deliveries', Delivery)):
-                rows = (await session.scalars(select(model).where(model.status == 'failed')
+                rows = (await session.scalars(select(model).where(model.status.in_(['failed', 'expired']))
                         .order_by(model.id).limit(limit).offset(offset))).all()
-                result[name] = [{'id': str(row.id), 'error_code': row.last_error_code,
+                result[name] = [{'id': str(row.id), 'status': row.status, 'error_code': row.last_error_code,
                                  'attempts': row.attempts, 'generation': row.generation} for row in rows]
         return result
 
@@ -71,6 +72,6 @@ class Operations:
                         .where(*request_filter, Request.accepted_at < cutoff)),
                     'overdue_deliveries': await session.scalar(select(func.count()).select_from(Delivery)
                         .join(Request).where(*delivery_filter, Request.accepted_at < cutoff))}
-            result['failed_requests'] = await session.scalar(select(func.count()).select_from(Request).where(Request.status == 'failed'))
-            result['failed_deliveries'] = await session.scalar(select(func.count()).select_from(Delivery).where(Delivery.status == 'failed'))
+            result['failed_requests'] = await session.scalar(select(func.count()).select_from(Request).where(Request.status.in_(['failed', 'expired'])))
+            result['failed_deliveries'] = await session.scalar(select(func.count()).select_from(Delivery).where(Delivery.status.in_(['failed', 'expired'])))
         return result

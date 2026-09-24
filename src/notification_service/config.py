@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     smtp_start_tls: bool = False
     smtp_use_tls: bool = False
     concurrency: int = Field(default=5, ge=1, le=100)
+    shutdown_timeout_seconds: float = Field(default=30, ge=1, le=300)
+    urgent_delivery_ttl_seconds: int = Field(default=3600, ge=60, le=604800)
+    bulk_delivery_ttl_seconds: int = Field(default=86400, ge=60, le=2592000)
+    outbox_retention_seconds: int = Field(default=604800, ge=3600, le=31536000)
 
     @model_validator(mode="after")
     def tokens_are_distinct(self):

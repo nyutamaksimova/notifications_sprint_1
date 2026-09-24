@@ -110,7 +110,7 @@ def create_app(settings=None, sessions=None, user_http=None):
     async def ready():
         async with app.state.sessions() as session:
             version = await session.scalar(text("SELECT version_num FROM alembic_version"))
-            if version != "0002":
+            if version != "0003":
                 raise HTTPException(503, "Migrations required")
         return {"status": "ok"}
 

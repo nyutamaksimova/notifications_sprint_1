@@ -1,10 +1,10 @@
 import asyncio
 from contextlib import suppress
-from datetime import timedelta
+from datetime import UTC, timedelta
 from uuid import UUID, uuid4
 from time import monotonic
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 
 from notification_service.db.models import Request, Delivery, Template, now
 from notification_service.outbox import enqueue
@@ -24,25 +24,36 @@ class MissingEntity(Exception):
 
 
 class Processor:
-    def __init__(self, sessions, auth, smtp):
+    def __init__(self, sessions, auth, smtp, delivery_ttl_seconds=None):
         self.sessions, self.auth, self.smtp = sessions, auth, smtp
         self.channels = ChannelRegistry({"email": smtp})
+        self.delivery_ttl_seconds = delivery_ttl_seconds or {"urgent": 3600, "bulk": 86400}
 
     async def handle(self, envelope):
         started = monotonic()
         model = Request if envelope.kind == "prepare" else Delivery
         token = uuid4()
         async with self.sessions() as session:
+            if session.bind.dialect.name == "postgresql":
+                database_now = await session.scalar(select(func.now()))
+            else:
+                database_now = now()
             row = (await session.execute(update(model).where(
                 model.id == envelope.entity_id, model.generation == envelope.generation,
                 model.status.in_(["pending", "accepted", "retry_wait"]),
-                model.next_attempt_at <= now()
-            ).values(status="processing", lease_token=token, lease_until=now() + timedelta(seconds=120),
+                model.next_attempt_at <= database_now
+            ).values(status="processing", lease_token=token, lease_until=database_now + timedelta(seconds=120),
                      attempts=model.attempts + 1).returning(model))).scalar_one_or_none()
             await session.commit()
             if row is None:
-                if await session.get(model, envelope.entity_id) is None:
+                existing = await session.get(model, envelope.entity_id)
+                if existing is None:
                     raise MissingEntity()
+                if existing.status == "retry_wait" and existing.generation == envelope.generation:
+                    enqueue(session, envelope.kind, existing.id, existing.generation,
+                            existing.next_attempt_at, lane=existing.lane,
+                            dedup_key=f"{envelope.kind}:{existing.id}:{existing.generation}:deferred:{envelope.message_id}")
+                    await session.commit()
                 return
         heartbeat = asyncio.create_task(self.heartbeat(model, row.id, token))
         try:
@@ -101,7 +112,7 @@ class Processor:
             if cursor:
                 row.generation += 1
                 row.status = "pending"
-                row.attempts = 0  # Retry budget per page, not per whole broadcast.
+                row.attempts = 0
                 row.next_attempt_at = now()
                 enqueue(session, "prepare", row.id, row.generation, lane=row.lane)
             else:
@@ -155,12 +166,21 @@ class Processor:
             if isinstance(error, TemporaryError):
                 delay = min(60 if row.lane == "urgent" else 300, 10 * 2 ** min(row.attempts - 1, 5))
             code = getattr(error, "code", "processing_error")
+            age_start = row.accepted_at if model is Request else None
+            if model is Delivery:
+                request = await session.get(Request, row.request_id)
+                age_start = request.accepted_at if request else now()
+            ttl = self.delivery_ttl_seconds.get(row.lane, self.delivery_ttl_seconds["bulk"])
+            if age_start is not None and age_start.tzinfo is None:
+                age_start = age_start.replace(tzinfo=UTC)
+            if age_start is not None and now() - age_start >= timedelta(seconds=ttl) and delay is not None:
+                delay, code = None, "delivery_expired"
             if delay is not None and isinstance(error, TemporaryError) and error.delay is not None:
                 delay = max(delay, min(1800, max(10, error.delay)))
             row.generation += 1
             row.last_error_code, row.lease_token, row.lease_until = code, None, None
             if delay is None:
-                row.status = "failed"
+                row.status = "expired" if code == "delivery_expired" else "failed"
                 enqueue(session, "failed", row.id, row.generation, error_code=code)
             else:
                 row.status = "retry_wait"
