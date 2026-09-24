@@ -1,9 +1,10 @@
 # Email-уведомления кинотеатра
 
+[Ссылка на репозиторий](https://github.com/nyutamaksimova/notifications_sprint_1)
+
 FastAPI принимает события и кампании; PostgreSQL хранит заявки и outbox;
 RabbitMQ передаёт задания prepare/send-воркерам. Send-воркер получает адрес и имя
 через внутренний API auth-service и отправляет multipart email через SMTP.
-
 
 ### Регистрация
 
